@@ -77,17 +77,17 @@ class TextClassificationPipelineTests(MonoInputPipelineCommonMixin, unittest.Tes
             string_output = classifier(string_input)
             string_list_output = classifier(string_list_input)
 
-            string_output_default = pipeline_call_argument("default")
+            string_output_default = pipeline_call_argument(None)
             string_output_sigmoid = pipeline_call_argument("sigmoid")
             string_output_softmax = pipeline_call_argument("softmax")
             string_output_none = pipeline_call_argument("none")
 
-            string_output_init_default = pipeline_init_argument("default")
+            string_output_init_default = pipeline_init_argument(None)
             string_output_init_sigmoid = pipeline_init_argument("sigmoid")
             string_output_init_softmax = pipeline_init_argument("softmax")
             string_output_init_none = pipeline_init_argument("none")
 
-            string_output_model_default = pipeline_model_argument("default")
+            string_output_model_default = pipeline_model_argument(None)
             string_output_model_sigmoid = pipeline_model_argument("sigmoid")
             string_output_model_softmax = pipeline_model_argument("softmax")
             string_output_model_none = pipeline_model_argument("none")
