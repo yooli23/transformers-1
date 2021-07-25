@@ -321,7 +321,7 @@ def main():
     # special_tokened_datasets = raw_datasets.map(lambda example, idx: {'triple': example['triple'] + " "}, with_indices=True)
 
     def tokenize_function(examples):
-        text = [m + " " + n for m,n in zip(examples[triple_column_name],examples[sentence_column_name])]
+        text = ["TRIPLES: " + m + " SENTENCE: " + n for m,n in zip(examples[triple_column_name],examples[sentence_column_name])]
         output = tokenizer(text, truncation=True, padding='max_length', max_length=1024)
         output["labels"] = output["input_ids"]
         # checking sentence length
