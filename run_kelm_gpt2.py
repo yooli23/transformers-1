@@ -334,6 +334,12 @@ def main():
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
 
+    # special_tokens_dict = {'bos_token': '<BOS>', 'eos_token': '<EOS>', 'pad_token': '<PAD>', 'sep_token': '<SEP>'}
+    # num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        config.pad_token_id = config.eos_token_id
+
     if model_args.model_name_or_path:
         model = AutoModelForCausalLM.from_pretrained(
             model_args.model_name_or_path,
@@ -356,30 +362,10 @@ def main():
         column_names = raw_datasets["train"].column_names
     else:
         column_names = raw_datasets["validation"].column_names
-    text_column_name = "text" if "text" in column_names else column_names[0]
-
+    triple_column_name = "triple"
+    sentence_column_name = "sentence"
     # since this will be pickled to avoid _LazyModule error in Hasher force logger loading before tokenize_function
     tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
-
-    def tokenize_function(examples):
-        with CaptureLogger(tok_logger) as cl:
-            output = tokenizer(examples[text_column_name])
-        # clm input could be much much longer than block_size
-        if "Token indices sequence length is longer than the" in cl.out:
-            tok_logger.warning(
-                "^^^^^^^^^^^^^^^^ Please ignore the warning above - this long input will be chunked into smaller bits before being passed to the model."
-            )
-        return output
-
-    with training_args.main_process_first(desc="dataset map tokenization"):
-        tokenized_datasets = raw_datasets.map(
-            tokenize_function,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not data_args.overwrite_cache,
-            desc="Running tokenizer on dataset",
-        )
 
     if data_args.block_size is None:
         block_size = tokenizer.model_max_length
@@ -397,22 +383,69 @@ def main():
             )
         block_size = min(data_args.block_size, tokenizer.model_max_length)
 
+    def tokenize_function(examples):
+        with CaptureLogger(tok_logger) as cl:
+            output = tokenizer(examples[triple_column_name], examples[sentence_column_name], padding=True, truncation=True)
+        # clm input could be much much longer than block_size
+        if "Token indices sequence length is longer than the" in cl.out:
+            tok_logger.warning(
+                "^^^^^^^^^^^^^^^^ Please ignore the warning above - this long input will be chunked into smaller bits before being passed to the model."
+            )
+        return output
+    # raw_datasets = raw_datasets.filter(lambda example, indice: indice % 20 == 0, with_indices=True)
+    print(raw_datasets["train"][:3])
+
+    special_tokened_datasets = raw_datasets.map(lambda example, idx: {'triple': example['triple'] + " "}, with_indices=True)
+
+    with training_args.main_process_first(desc="dataset map tokenization"):
+        tokenized_datasets = special_tokened_datasets.map(
+            tokenize_function,
+            batched=True,
+            num_proc=data_args.preprocessing_num_workers,
+            remove_columns=column_names,
+            load_from_cache_file=not data_args.overwrite_cache,
+            desc="Running tokenizer on dataset",
+        )
+    print(tokenized_datasets["train"][:3])
+    for ids in tokenized_datasets["train"][:3]["input_ids"]:
+        print(tokenizer.decode(ids))
+
+    # if data_args.block_size is None:
+    #     block_size = tokenizer.model_max_length
+    #     if block_size > 1024:
+    #         logger.warning(
+    #             f"The tokenizer picked seems to have a very large `model_max_length` ({tokenizer.model_max_length}). "
+    #             "Picking 1024 instead. You can change that default value by passing --block_size xxx."
+    #         )
+    #         block_size = 1024
+    # else:
+    #     if data_args.block_size > tokenizer.model_max_length:
+    #         logger.warning(
+    #             f"The block_size passed ({data_args.block_size}) is larger than the maximum length for the model"
+    #             f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
+    #         )
+    #     block_size = min(data_args.block_size, tokenizer.model_max_length)
+
     # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
-    def group_texts(examples):
-        # Concatenate all texts.
-        concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
-        total_length = len(concatenated_examples[list(examples.keys())[0]])
-        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
-        # customize this part to your needs.
-        if total_length >= block_size:
-            total_length = (total_length // block_size) * block_size
-        # Split by chunks of max_len.
-        result = {
-            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
-            for k, t in concatenated_examples.items()
-        }
-        result["labels"] = result["input_ids"].copy()
-        return result
+    # def group_texts(examples):
+    #     # Concatenate all texts.
+    #     concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+    #     total_length = len(concatenated_examples[list(examples.keys())[0]])
+    #     # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+    #     # customize this part to your needs.
+    #     if total_length >= block_size:
+    #         total_length = (total_length // block_size) * block_size
+    #     # Split by chunks of max_len.
+    #     result = {
+    #         k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+    #         for k, t in concatenated_examples.items()
+    #     }
+    #     result["labels"] = result["input_ids"].copy()
+    #     return result
+    
+    def add_labels(examples):
+        examples["label"] = examples["input_ids"].copy()
+        return examples
 
     # Note that with `batched=True`, this map processes 1,000 texts together, so group_texts throws away a remainder
     # for each of those groups of 1,000 texts. You can adjust that batch_size here but a higher value might be slower
@@ -421,14 +454,16 @@ def main():
     # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
     # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map
 
-    with training_args.main_process_first(desc="grouping texts together"):
+    with training_args.main_process_first(desc="adding labels in the dataset"):
         lm_datasets = tokenized_datasets.map(
-            group_texts,
+            add_labels,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
-            desc=f"Grouping texts in chunks of {block_size}",
+            desc="Adding lables",
         )
+
+    print(lm_datasets["train"][:3])
 
     if training_args.do_train:
         if "train" not in tokenized_datasets:
