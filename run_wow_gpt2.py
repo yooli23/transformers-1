@@ -246,52 +246,33 @@ def main():
     #
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
-    if data_args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset(
-            data_args.dataset_name, data_args.dataset_config_name, cache_dir=model_args.cache_dir
+    data_files = {}
+    if data_args.train_file is not None:
+        data_files["train"] = data_args.train_file
+    if data_args.validation_file is not None:
+        data_files["validation"] = data_args.validation_file
+    extension = (
+        data_args.train_file.split(".")[-1]
+        if data_args.train_file is not None
+        else data_args.validation_file.split(".")[-1]
+    )
+    if extension == "txt":
+        extension = "text"
+    raw_datasets = load_dataset(extension, data_files=data_files, cache_dir=model_args.cache_dir)
+    # If no validation data is there, validation_split_percentage will be used to divide the dataset.
+    if "validation" not in raw_datasets.keys():
+        raw_datasets["validation"] = load_dataset(
+            extension,
+            data_files=data_files,
+            split=f"train[:{data_args.validation_split_percentage}%]",
+            cache_dir=model_args.cache_dir,
         )
-        if "validation" not in raw_datasets.keys():
-            raw_datasets["validation"] = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                split=f"train[:{data_args.validation_split_percentage}%]",
-                cache_dir=model_args.cache_dir,
-            )
-            raw_datasets["train"] = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                split=f"train[{data_args.validation_split_percentage}%:]",
-                cache_dir=model_args.cache_dir,
-            )
-    else:
-        data_files = {}
-        if data_args.train_file is not None:
-            data_files["train"] = data_args.train_file
-        if data_args.validation_file is not None:
-            data_files["validation"] = data_args.validation_file
-        extension = (
-            data_args.train_file.split(".")[-1]
-            if data_args.train_file is not None
-            else data_args.validation_file.split(".")[-1]
+        raw_datasets["train"] = load_dataset(
+            extension,
+            data_files=data_files,
+            split=f"train[{data_args.validation_split_percentage}%:]",
+            cache_dir=model_args.cache_dir,
         )
-        if extension == "txt":
-            extension = "text"
-        raw_datasets = load_dataset(extension, data_files=data_files, cache_dir=model_args.cache_dir)
-        # If no validation data is there, validation_split_percentage will be used to divide the dataset.
-        if "validation" not in raw_datasets.keys():
-            raw_datasets["validation"] = load_dataset(
-                extension,
-                data_files=data_files,
-                split=f"train[:{data_args.validation_split_percentage}%]",
-                cache_dir=model_args.cache_dir,
-            )
-            raw_datasets["train"] = load_dataset(
-                extension,
-                data_files=data_files,
-                split=f"train[{data_args.validation_split_percentage}%:]",
-                cache_dir=model_args.cache_dir,
-            )
 
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
@@ -333,9 +314,9 @@ def main():
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
-
+    # print(raw_datasets['train'][:3])
     # del raw_datasets['train']
-    # del raw_datasets['test']
+    # # del raw_datasets['test']
     # # raw_datasets['validation'] = raw_datasets['validation'][:100]
 
     if tokenizer.pad_token is None:
@@ -364,8 +345,7 @@ def main():
         column_names = raw_datasets["train"].column_names
     else:
         column_names = raw_datasets["validation"].column_names
-    triple_column_name = "triple"
-    sentence_column_name = "sentence"
+
     # since this will be pickled to avoid _LazyModule error in Hasher force logger loading before tokenize_function
     tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
 
@@ -387,8 +367,7 @@ def main():
 
     def tokenize_function(examples):
         with CaptureLogger(tok_logger) as cl:
-            text = ["TRIPLES: " + m + " SENTENCE: " + n for m,n in zip(examples[triple_column_name],examples[sentence_column_name])]
-            output = tokenizer(text, truncation=True, padding='max_length', max_length=1024)
+            output = tokenizer(examples['text'], truncation=True, padding='max_length', max_length=1024)
             output["labels"] = output["input_ids"]
         # clm input could be much much longer than block_size
         if "Token indices sequence length is longer than the" in cl.out:
@@ -409,61 +388,6 @@ def main():
     # print(tokenized_datasets["train"][:3])
     # for ids in tokenized_datasets["train"][:3]["input_ids"]:
     #     print(tokenizer.decode(ids))
-
-    # if data_args.block_size is None:
-    #     block_size = tokenizer.model_max_length
-    #     if block_size > 1024:
-    #         logger.warning(
-    #             f"The tokenizer picked seems to have a very large `model_max_length` ({tokenizer.model_max_length}). "
-    #             "Picking 1024 instead. You can change that default value by passing --block_size xxx."
-    #         )
-    #         block_size = 1024
-    # else:
-    #     if data_args.block_size > tokenizer.model_max_length:
-    #         logger.warning(
-    #             f"The block_size passed ({data_args.block_size}) is larger than the maximum length for the model"
-    #             f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
-    #         )
-    #     block_size = min(data_args.block_size, tokenizer.model_max_length)
-
-    # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
-    # def group_texts(examples):
-    #     # Concatenate all texts.
-    #     concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
-    #     total_length = len(concatenated_examples[list(examples.keys())[0]])
-    #     # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
-    #     # customize this part to your needs.
-    #     if total_length >= block_size:
-    #         total_length = (total_length // block_size) * block_size
-    #     # Split by chunks of max_len.
-    #     result = {
-    #         k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
-    #         for k, t in concatenated_examples.items()
-    #     }
-    #     result["labels"] = result["input_ids"].copy()
-    #     return result
-    
-    # def add_labels(examples):
-    #     examples["label"] = examples["input_ids"].copy()
-    #     return examples
-
-    # Note that with `batched=True`, this map processes 1,000 texts together, so group_texts throws away a remainder
-    # for each of those groups of 1,000 texts. You can adjust that batch_size here but a higher value might be slower
-    # to preprocess.
-    #
-    # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
-    # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map
-
-    # with training_args.main_process_first(desc="adding labels in the dataset"):
-    #     lm_datasets = tokenized_datasets.map(
-    #         add_labels,
-    #         batched=True,
-    #         num_proc=data_args.preprocessing_num_workers,
-    #         load_from_cache_file=not data_args.overwrite_cache,
-    #         desc="Adding lables",
-    #     )
-
-    # print(lm_datasets["train"][:3])
 
     if training_args.do_train:
         if "train" not in tokenized_datasets:
