@@ -314,14 +314,18 @@ def main():
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
-    # print(raw_datasets['train'][:3])
+    print(raw_datasets['train'][:3])
+    print(tokenizer.encode(tokenizer.eos_token))
     # del raw_datasets['train']
-    # # del raw_datasets['test']
-    # # raw_datasets['validation'] = raw_datasets['validation'][:100]
+    # del raw_datasets['test']
+    # raw_datasets['validation'] = raw_datasets['validation'][:100]
 
+    tokenizer.add_tokens(['Wizard:','Apprentice:'])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         config.pad_token_id = config.eos_token_id
+    
+    # tokenizer.add_special_tokens({'additional_special_tokens': ["Apprentice:", "Wizard:"]})
 
     if model_args.model_name_or_path:
         model = AutoModelForCausalLM.from_pretrained(
@@ -365,9 +369,35 @@ def main():
             )
         block_size = min(data_args.block_size, tokenizer.model_max_length)
 
+    count_length = [0, 0, 0, 0]
+
     def tokenize_function(examples):
         with CaptureLogger(tok_logger) as cl:
-            output = tokenizer(examples['text'], truncation=True, padding='max_length', max_length=1024)
+            output = {}
+            list_ids = []
+            list_attention_masks = []
+            for idx, example in enumerate(examples['text']):
+                ids = []
+                for turn_idx, turn in enumerate(example):
+                    speaker = turn['speaker'].split('_')[-1]
+                    if not ids and speaker =="Wizard":
+                        ids += (tokenizer.encode("Apprentice:") + tokenizer.encode(examples['topic'][idx]) + [config.eos_token_id])
+                    if speaker == 'Wizard':
+                        ids += (tokenizer.encode("Wizard:") + tokenizer.encode(turn['turn_text']) + [config.eos_token_id])
+                    else:
+                        ids += (tokenizer.encode("Apprentice:") + tokenizer.encode(turn['turn_text']) + [config.eos_token_id])
+                attention_mask = [1] * len(ids)
+                # padding
+                if len(ids) < block_size:
+                    ids += ([config.eos_token_id] * (400 - len(ids)))
+                    attention_mask += ([0] * (400 - len(attention_mask)))
+                else:
+                    ids = ids[-block_size:]
+                    attention_mask = attention_mask[-block_size:]
+                list_ids.append(ids)
+                list_attention_masks.append(attention_mask)
+            output["input_ids"] = list_ids
+            output["attention_mask"] = list_attention_masks
             output["labels"] = output["input_ids"]
         # clm input could be much much longer than block_size
         if "Token indices sequence length is longer than the" in cl.out:
@@ -385,9 +415,35 @@ def main():
             load_from_cache_file=not data_args.overwrite_cache,
             desc="Running tokenizer on dataset",
         )
-    # print(tokenized_datasets["train"][:3])
-    # for ids in tokenized_datasets["train"][:3]["input_ids"]:
-    #     print(tokenizer.decode(ids))
+
+    # browse
+    for ids in tokenized_datasets["train"]["input_ids"]:
+        if len(ids) == 400:
+            count_length[0] += 1
+        else:
+            count_length[1] += 1
+    print(tokenized_datasets["validation"][:3])
+    for ids in tokenized_datasets["validation"][:3]["input_ids"]:
+        print(tokenizer.decode(ids))
+    print(type(tokenized_datasets["validation"][:3]["input_ids"]))
+    print(type(tokenized_datasets["validation"][:3]["input_ids"][0]))
+    print(type(tokenized_datasets["validation"][:3]["input_ids"][0][0]))
+    print(type(tokenized_datasets["validation"][:3]["attention_mask"]))
+    print(type(tokenized_datasets["validation"][:3]["attention_mask"][0]))
+    print(type(tokenized_datasets["validation"][:3]["attention_mask"][0][0]))
+    test_return = tokenizer(["I am test 1", "I am test 2", "I am test 3"])
+    print("tokenizer testing")
+    print(type(test_return['input_ids']))
+    print(type(test_return['input_ids'][0]))
+    print(type(test_return['input_ids'][0][0]))
+    print(type(test_return['attention_mask']))
+    print(type(test_return['attention_mask'][0]))
+    print(type(test_return['attention_mask'][0][0]))
+    print(count_length)
+    print(len(tokenized_datasets["train"]))
+    print(len(tokenized_datasets["validation"]))
+    # raise ValueError("testing break")
+
 
     if training_args.do_train:
         if "train" not in tokenized_datasets:
@@ -425,12 +481,18 @@ def main():
         trainer.save_model()  # Saves the tokenizer too for easy upload
 
         metrics = train_result.metrics
-
+        print(metrics)
         max_train_samples = (
             data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
         )
         metrics["train_samples"] = min(max_train_samples, len(train_dataset))
 
+        try:
+            perplexity = math.exp(metrics["train_loss"])
+        except OverflowError:
+            perplexity = float("inf")
+        metrics["train_perplexity"] = perplexity
+        print(metrics)
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
         trainer.save_state()
@@ -447,7 +509,7 @@ def main():
             perplexity = math.exp(metrics["eval_loss"])
         except OverflowError:
             perplexity = float("inf")
-        metrics["perplexity"] = perplexity
+        metrics["eval_perplexity"] = perplexity
 
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
