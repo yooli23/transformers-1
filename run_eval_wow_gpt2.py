@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import sys
+import torch
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -140,6 +141,14 @@ class DataTrainingArguments:
         },
     )
     max_eval_samples: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
+            "value if set."
+        },
+    )
+
+    max_test_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
@@ -292,7 +301,7 @@ def main():
     model.resize_token_embeddings(len(tokenizer))
 
     # Preprocessing the datasets.
-
+    column_names = raw_datasets["test"].column_names
     # since this will be pickled to avoid _LazyModule error in Hasher force logger loading before tokenize_function
     tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
 
@@ -312,12 +321,37 @@ def main():
             )
         block_size = min(data_args.block_size, tokenizer.model_max_length)
 
+    print("debugging")
+    print(tokenizer.encode("Wizard:", return_tensors="pt"))
+    print(torch.cat((tokenizer.encode("Apprentice:", return_tensors="pt"), tokenizer.encode("I love you", return_tensors="pt"), torch.tensor([[config.eos_token_id]])), 1))
+
     def tokenize_function(examples):
         with CaptureLogger(tok_logger) as cl:
             output = {}
-            output["input_ids"] = tokenizer.encode(examples['text'][0], add_special_tokens=False, return_tensors="pt").to(model.device)
-            output['text'] = examples['text'][0]
-            output['reference'] = tokenizer.tokenize(examples['text'])
+            list_ids = []
+            list_reference = []
+            list_text = []
+            for idx, example in enumerate(examples['text']):
+                ids = []
+                text = ""
+                for turn_idx, turn in enumerate(example):
+                    speaker = turn['speaker'].split('_')[-1]
+                    if not (ids) and speaker =="Wizard":
+                        ids = tokenizer.encode("Apprentice:") + tokenizer.encode(examples['topic'][idx]) + [config.eos_token_id]
+                        text = "Apprentice:" + examples['topic'][idx] +"<|endoftext|>"
+                    if speaker == 'Wizard':
+                        if (ids):
+                            list_ids.append(ids)
+                            list_text.append(text)
+                        list_reference.append(turn['turn_text'])
+                        ids = ids + tokenizer.encode("Wizard:") + tokenizer.encode(turn['turn_text']) + [config.eos_token_id]
+                        text += ("Wizard:" + turn['turn_text'] + "<|endoftext|>")
+                    else:
+                        ids = ids + tokenizer.encode("Apprentice:") + tokenizer.encode(turn['turn_text']) + [config.eos_token_id]
+                        text += ("Apprentice:" + turn['turn_text'] + "<|endoftext|>")
+            output["input_ids"] = list_ids
+            output["text"] = list_text
+            output["reference"] = list_reference
         # clm input could be much much longer than block_size
         if "Token indices sequence length is longer than the" in cl.out:
             tok_logger.warning(
@@ -325,63 +359,75 @@ def main():
             )
         return output
 
-    # with training_args.main_process_first(desc="dataset map tokenization"):
-    #     tokenized_datasets = raw_datasets.map(
-    #         tokenize_function,
-    #         batched=False,
-    #         num_proc=data_args.preprocessing_num_workers,
-    #         # remove_columns=column_names,
-    #         load_from_cache_file=not data_args.overwrite_cache,
-    #         desc="Running tokenizer on dataset",
-    #     )
-    # print(tokenized_datasets["test"][:3])
-    # for ids in tokenized_datasets["test"][:3]["input_ids"]:
-    #     print(tokenizer.decode(ids))
+    with training_args.main_process_first(desc="dataset map tokenization"):
+        tokenized_datasets = raw_datasets.map(
+            tokenize_function,
+            batched=True,
+            num_proc=data_args.preprocessing_num_workers,
+            remove_columns=column_names,
+            load_from_cache_file=not data_args.overwrite_cache,
+            desc="Running tokenizer on dataset",
+        )
+
+    print(tokenized_datasets["test"][:3])
+    for ids in tokenized_datasets["test"][:3]["input_ids"]:
+        print(tokenizer.decode(ids))
+    print(tokenized_datasets["test"][:3]["text"])
+    print(tokenized_datasets["test"][:3]["reference"])
+
+
+    test_dataset = tokenized_datasets["test"]
+    if data_args.max_test_samples is not None:
+        test_dataset = test_dataset.select(range(data_args.max_test_samples))
+
     model.eval()
     metrics = load_metric('bleu')
     list_candidate = []
     list_reference = []
-    for idx, row in enumerate(raw_datasets["test"]):
-        prompt_text = row["text"] + "Wizard: "
-        encoded_prompt = tokenizer.encode(prompt_text, add_special_tokens=False, return_tensors="pt")
-        encoded_prompt = encoded_prompt.to(model.device)
-        print(row["text"])
-        input_ids = encoded_prompt
-        # print(input_ids)
-        #print(model(row['input_ids']))
+
+    for idx, row in enumerate(test_dataset):
+        input_ids = row["input_ids"]
+        input_ids += tokenizer.encode("Wizard:")
+        input_ids = torch.tensor([input_ids]).to(torch.int64)
+        input_ids = input_ids.to(model.device)
+        prompt_text = row["text"]
+        print(prompt_text)
+        reference = row["reference"]
         generated_text_samples = model.generate(
             input_ids=input_ids, 
-            max_length=300,  
+            max_length=400,  
             num_return_sequences=1,
-            no_repeat_ngram_size=2,
-            repetition_penalty=1.5,
-            top_p=0.92,
-            temperature=.85,
+            repetition_penalty=1.0,
+            top_p=0.9,
+            temperature=1.0,
             do_sample=True,
-            top_k=125,
-            early_stopping=True
+            top_k=0,
         )
         # print(generated_text_samples)
+        candidate = ""
         for i, beam in enumerate(generated_text_samples):
-            candidate = tokenizer.decode(beam, skip_special_tokens=True)
-            candidate = candidate.replace(prompt_text, "")
-            pos = candidate.find("Apprentice")
-            if pos != -1:
-                candidate = candidate[:pos]
-            list_candidate.append(candidate)
-            list_reference.append(row["reference"])
-            candidate = re.sub(r'[^A-Za-z0-9_ ]+', '', candidate).split(" ")
-            reference = re.sub(r'[^A-Za-z0-9_ ]+', '', row["reference"]).split(" ")
-            print(candidate)
-            print(reference)
+            print(f"=== GENERATED SEQUENCE ===")
+            beam = beam.tolist()
+            text = tokenizer.decode(beam, clean_up_tokenization_spaces=True)
             
-            metrics.add(prediction = candidate, reference = [reference])
-
+            # pos = candidate.find("Apprentice")
+            # if pos != -1:
+            #     candidate = candidate[:pos]
+            # list_candidate.append(candidate)
+            # list_reference.append(row["reference"])
+            # candidate = re.sub(r'[^A-Za-z0-9_ ]+', '', candidate).split(" ")
+            # reference = re.sub(r'[^A-Za-z0-9_ ]+', '', row["reference"]).split(" ")
+            candidate = text.replace(prompt_text, "").replace("Wizard:", "").replace("<|endoftext|>", "")
+            print(candidate)
+            
+            # metrics.add(prediction = candidate, reference = [reference])
+        list_candidate.append(candidate)
+        list_reference.append(reference)
     # Create DataFrame
     df = pd.DataFrame({'candidate': list_candidate, 'reference': list_reference})
-    df.to_csv("../data/wow_gpt2/wow/our_wow_gpt2_test_seen")
+    df.to_csv("../data/wow_gpt2/wow/train7_wow_gpt2_test_seen_6336step.csv")
 
-    print(metrics.compute(max_order=4))
+    # print(metrics.compute(max_order=4))
 
 
 def _mp_fn(index):

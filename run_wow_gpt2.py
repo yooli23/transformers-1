@@ -150,6 +150,13 @@ class DataTrainingArguments:
             "value if set."
         },
     )
+    max_test_samples: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
+            "value if set."
+        },
+    )
 
     block_size: Optional[int] = field(
         default=None,
@@ -157,6 +164,24 @@ class DataTrainingArguments:
             "help": "Optional input sequence length after tokenization. "
             "The training dataset will be truncated in block of this size for training. "
             "Default to the model max input length for single sentence inputs (take into account special tokens)."
+        },
+    )
+    kg_length: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Optional knowledge sequence length"
+        },
+    )
+    add_triples_in_checked_sentence: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to add triples as knowledge from checked sentence in the input or not."
+        },
+    )
+    add_triples_in_text: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to add triples as knowledge from context in the input or not."
         },
     )
     overwrite_cache: bool = field(
@@ -314,13 +339,16 @@ def main():
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
-    print(raw_datasets['train'][:3])
-    print(tokenizer.encode(tokenizer.eos_token))
+    # print(raw_datasets['train'][:3])
+    # print(tokenizer.encode(tokenizer.eos_token))
     # del raw_datasets['train']
     # del raw_datasets['test']
     # raw_datasets['validation'] = raw_datasets['validation'][:100]
-
-    tokenizer.add_tokens(['Wizard:','Apprentice:'])
+    if not data_args.add_triples_in_checked_sentence:
+        added_tokens = ['Wizard:', 'Apprentice:']
+    else:
+        added_tokens = ['Wizard:', 'Apprentice:', 'Triples:']
+    tokenizer.add_tokens(added_tokens)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         config.pad_token_id = config.eos_token_id
@@ -376,21 +404,60 @@ def main():
             output = {}
             list_ids = []
             list_attention_masks = []
+
             for idx, example in enumerate(examples['text']):
                 ids = []
+                if data_args.add_triples_in_text:
+                    text_triples = []
                 for turn_idx, turn in enumerate(example):
                     speaker = turn['speaker'].split('_')[-1]
                     if not ids and speaker =="Wizard":
                         ids += (tokenizer.encode("Apprentice:") + tokenizer.encode(examples['topic'][idx]) + [config.eos_token_id])
                     if speaker == 'Wizard':
+                        if data_args.add_triples_in_checked_sentence:
+                            # encode triples in checked sentence and append it to ids
+                            triples = "None "
+                            if 'triples_in_checked_sentence' in turn:
+                                for triples_idx, triple in enumerate(turn['triples_in_checked_sentence']):
+                                    if triples_idx < 20:
+                                        if triples == "None ":
+                                            triples = (triple['subject'] + " " + triple['relation'] + " " + triple['object'] + " ")
+                                        else:
+                                            triples += (triple['subject'] + " " + triple['relation'] + " " + triple['object']+ " ")
+                            else:
+                                raise ValueError("--add_triples_in_checked_sentence requires a file including triples_in_checked_sentence key")
+                            info_ids = tokenizer.encode("Triples:") + tokenizer.encode(triples)
+                            if len(info_ids) > data_args.kg_length:
+                                info_ids = info_ids[:data_args.kg_length]
+                            ids += info_ids
+                        if data_args.add_triples_in_text:
+                            # encode triples in context and append it to ids
+                            triples = "None "
+                            for triples_idx, triple in enumerate(text_triples):
+                                if triples_idx < 20:
+                                    if triples == "None ":
+                                        triples = (triple['subject'] + " " + triple['relation'] + " " + triple['object'] + " ")
+                                    else:
+                                        triples += (triple['subject'] + " " + triple['relation'] + " " + triple['object'] + " ")
+                            info_ids = tokenizer.encode("Triples:") + tokenizer.encode(triples)
+                            if len(info_ids) > data_args.kg_length:
+                                info_ids = info_ids[:data_args.kg_length]
+                            ids += info_ids
                         ids += (tokenizer.encode("Wizard:") + tokenizer.encode(turn['turn_text']) + [config.eos_token_id])
                     else:
                         ids += (tokenizer.encode("Apprentice:") + tokenizer.encode(turn['turn_text']) + [config.eos_token_id])
+                    if data_args.add_triples_in_text:
+                        # add triples in context
+                        if 'triples_in_text' in turn:
+                            # add triples in current turn ahead of previous triples
+                            text_triples = turn['triples_in_text'] + text_triples
+                        else:
+                            raise ValueError("--add_triples_in_text requires a file including triples_in_text key")
                 attention_mask = [1] * len(ids)
                 # padding
                 if len(ids) < block_size:
-                    ids += ([config.eos_token_id] * (400 - len(ids)))
-                    attention_mask += ([0] * (400 - len(attention_mask)))
+                    ids += ([config.eos_token_id] * (block_size - len(ids)))
+                    attention_mask += ([0] * (block_size - len(attention_mask)))
                 else:
                     ids = ids[-block_size:]
                     attention_mask = attention_mask[-block_size:]
@@ -417,31 +484,35 @@ def main():
         )
 
     # browse
-    for ids in tokenized_datasets["train"]["input_ids"]:
-        if len(ids) == 400:
-            count_length[0] += 1
-        else:
-            count_length[1] += 1
-    print(tokenized_datasets["validation"][:3])
-    for ids in tokenized_datasets["validation"][:3]["input_ids"]:
-        print(tokenizer.decode(ids))
-    print(type(tokenized_datasets["validation"][:3]["input_ids"]))
-    print(type(tokenized_datasets["validation"][:3]["input_ids"][0]))
-    print(type(tokenized_datasets["validation"][:3]["input_ids"][0][0]))
-    print(type(tokenized_datasets["validation"][:3]["attention_mask"]))
-    print(type(tokenized_datasets["validation"][:3]["attention_mask"][0]))
-    print(type(tokenized_datasets["validation"][:3]["attention_mask"][0][0]))
-    test_return = tokenizer(["I am test 1", "I am test 2", "I am test 3"])
-    print("tokenizer testing")
-    print(type(test_return['input_ids']))
-    print(type(test_return['input_ids'][0]))
-    print(type(test_return['input_ids'][0][0]))
-    print(type(test_return['attention_mask']))
-    print(type(test_return['attention_mask'][0]))
-    print(type(test_return['attention_mask'][0][0]))
-    print(count_length)
-    print(len(tokenized_datasets["train"]))
-    print(len(tokenized_datasets["validation"]))
+    # for ids in tokenized_datasets["train"]["input_ids"]:
+    #     if len(ids) < 512:
+    #         count_length[0] += 1
+    #     elif len(ids) < 600:
+    #         count_length[1] += 1
+    #     elif len(ids) < 700:
+    #         count_length[2] += 1
+    #     elif len(ids) > 700:
+    #         count_length[3] += 1
+    # print(tokenized_datasets["validation"][:3])
+    # for ids in tokenized_datasets["validation"][:3]["input_ids"]:
+    #     print(tokenizer.decode(ids))
+    # print(type(tokenized_datasets["validation"][:3]["input_ids"]))
+    # print(type(tokenized_datasets["validation"][:3]["input_ids"][0]))
+    # print(type(tokenized_datasets["validation"][:3]["input_ids"][0][0]))
+    # print(type(tokenized_datasets["validation"][:3]["attention_mask"]))
+    # print(type(tokenized_datasets["validation"][:3]["attention_mask"][0]))
+    # print(type(tokenized_datasets["validation"][:3]["attention_mask"][0][0]))
+    # test_return = tokenizer(["I am test 1", "I am test 2", "I am test 3"])
+    # print("tokenizer testing")
+    # print(type(test_return['input_ids']))
+    # print(type(test_return['input_ids'][0]))
+    # print(type(test_return['input_ids'][0][0]))
+    # print(type(test_return['attention_mask']))
+    # print(type(test_return['attention_mask'][0]))
+    # print(type(test_return['attention_mask'][0][0]))
+    # print(count_length)
+    # print(len(tokenized_datasets["train"]))
+    # print(len(tokenized_datasets["validation"]))
     # raise ValueError("testing break")
 
 
