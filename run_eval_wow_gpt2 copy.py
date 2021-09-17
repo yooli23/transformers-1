@@ -438,9 +438,7 @@ def main():
     metrics = load_metric('bleu')
     list_candidate = []
     list_reference = []
-    print(model.device)
-    model.to(training_args.device)
-    print(model.device)
+
     for idx, row in enumerate(test_dataset):
         input_ids = row["input_ids"]
         prompt_text = tokenizer.decode(input_ids)
@@ -448,12 +446,11 @@ def main():
         input_ids = torch.tensor([input_ids]).to(torch.int64)
         input_ids = input_ids.to(model.device)
         # prompt_text = row["text"]
-        # print(prompt_text)
+        print(prompt_text)
         reference = row["reference"]
         generated_text_samples = model.generate(
             input_ids=input_ids, 
-            max_length=block_size,
-            num_beams=5,  
+            max_length=block_size,  
             num_return_sequences=1,
             repetition_penalty=1.0,
             top_p=0.9,
@@ -463,7 +460,6 @@ def main():
         )
         # print(generated_text_samples)
         candidate = ""
-        # print(len(generated_text_samples))
         for i, beam in enumerate(generated_text_samples):
             print(f"=== GENERATED SEQUENCE ===")
             beam = beam.tolist()

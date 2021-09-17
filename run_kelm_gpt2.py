@@ -410,61 +410,6 @@ def main():
     # for ids in tokenized_datasets["train"][:3]["input_ids"]:
     #     print(tokenizer.decode(ids))
 
-    # if data_args.block_size is None:
-    #     block_size = tokenizer.model_max_length
-    #     if block_size > 1024:
-    #         logger.warning(
-    #             f"The tokenizer picked seems to have a very large `model_max_length` ({tokenizer.model_max_length}). "
-    #             "Picking 1024 instead. You can change that default value by passing --block_size xxx."
-    #         )
-    #         block_size = 1024
-    # else:
-    #     if data_args.block_size > tokenizer.model_max_length:
-    #         logger.warning(
-    #             f"The block_size passed ({data_args.block_size}) is larger than the maximum length for the model"
-    #             f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
-    #         )
-    #     block_size = min(data_args.block_size, tokenizer.model_max_length)
-
-    # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
-    # def group_texts(examples):
-    #     # Concatenate all texts.
-    #     concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
-    #     total_length = len(concatenated_examples[list(examples.keys())[0]])
-    #     # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
-    #     # customize this part to your needs.
-    #     if total_length >= block_size:
-    #         total_length = (total_length // block_size) * block_size
-    #     # Split by chunks of max_len.
-    #     result = {
-    #         k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
-    #         for k, t in concatenated_examples.items()
-    #     }
-    #     result["labels"] = result["input_ids"].copy()
-    #     return result
-    
-    # def add_labels(examples):
-    #     examples["label"] = examples["input_ids"].copy()
-    #     return examples
-
-    # Note that with `batched=True`, this map processes 1,000 texts together, so group_texts throws away a remainder
-    # for each of those groups of 1,000 texts. You can adjust that batch_size here but a higher value might be slower
-    # to preprocess.
-    #
-    # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
-    # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map
-
-    # with training_args.main_process_first(desc="adding labels in the dataset"):
-    #     lm_datasets = tokenized_datasets.map(
-    #         add_labels,
-    #         batched=True,
-    #         num_proc=data_args.preprocessing_num_workers,
-    #         load_from_cache_file=not data_args.overwrite_cache,
-    #         desc="Adding lables",
-    #     )
-
-    # print(lm_datasets["train"][:3])
-
     if training_args.do_train:
         if "train" not in tokenized_datasets:
             raise ValueError("--do_train requires a train dataset")
